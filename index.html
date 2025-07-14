@@ -1,0 +1,309 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <title>전쟁</title>
+  <style>
+    body { margin: 0; overflow: hidden; background: #000; }
+    #gameCanvas { display: block; background: #111; }
+    button {
+      position: absolute;
+      padding: 20px 40px;
+      font-size: 24px;
+      background: #0ff;
+      color: #000;
+      border: none;
+      border-radius: 10px;
+      cursor: pointer;
+      box-shadow: 0 0 10px rgba(0,255,255,0.5);
+    }
+    #startButton { top: 50%; left: 50%; transform: translate(-50%, -50%); display: none; }
+    #restartButton { top: 60%; left: 50%; transform: translate(-50%, -50%); display: none; }
+    #scoreboard { position: absolute; top: 10px; left: 10px; color: #0ff; font: 20px sans-serif; }
+    .message { position: absolute; top: 45%; left: 50%; transform: translate(-50%, -50%); color: #0ff; font: 24px sans-serif; }
+  </style>
+</head>
+<body>
+  <canvas id="gameCanvas" width="800" height="400"></canvas>
+  <div id="message" class="message">이미지 로딩 중...</div>
+  <button id="startButton">시작</button>
+  <button id="restartButton">재시작</button>
+  <div id="scoreboard"></div>
+
+  <script>
+    let keys = {};
+    document.addEventListener('keydown', e => { keys[e.key] = true; });
+    document.addEventListener('keyup', e => { keys[e.key] = false; });
+
+    const canvas = document.getElementById('gameCanvas');
+    const ctx = canvas.getContext('2d');
+    const startBtn = document.getElementById('startButton');
+    const restartBtn = document.getElementById('restartButton');
+    const scoreBoard = document.getElementById('scoreboard');
+    const messageDiv = document.getElementById('message');
+
+    let playerImg, enemyImgs, itemImg;
+    let bullets = [], enemyBullets = [], enemies = [], items = [];
+    let score = 0, level = 1, gameOver = false, victory = false;
+    let lastEnemySpawn = 0, enemySpawnInterval = 2000;
+    const reloadTime = 1000;
+    let canShoot = true, unlimitedAmmo = false;
+
+    function loadImages(sources) {
+      return Promise.all(sources.map(src => new Promise(resolve => {
+        const img = new Image(); img.src = src;
+        img.onload = () => resolve(img);
+        img.onerror = () => {
+          const placeholder = document.createElement('canvas');
+          placeholder.width = 40; placeholder.height = 60;
+          const pctx = placeholder.getContext('2d');
+          pctx.fillStyle = '#f00'; pctx.fillRect(0, 0, placeholder.width, placeholder.height);
+          resolve(placeholder);
+        };
+      })));
+    }
+
+    function init([loadedPlayer, ...loadedEnemies], [loadedItem]) {
+      playerImg = loadedPlayer;
+      enemyImgs = loadedEnemies;
+      itemImg = loadedItem;
+      messageDiv.style.display = 'none';
+      startBtn.style.display = 'block';
+      startBtn.onclick = () => {
+        startBtn.style.display = 'none';
+        lastEnemySpawn = Date.now();
+        loop();
+      };
+      restartBtn.onclick = resetGame;
+    }
+
+    const player = {
+      x:100, y:canvas.height-60, width:40, height:60,
+      speed:4, velY:0, jumping:false, health:3
+    };
+
+    function shootBullet(from, speed, list) {
+      list.push({
+        x: from.x + from.width,
+        y: from.y + from.height/2 - 2,
+        width:10, height:4, speed
+      });
+    }
+
+    function spawnEnemy() {
+      const type = Math.floor(Math.random() * enemyImgs.length);
+      enemies.push({
+        x: canvas.width,
+        y: canvas.height - 60,
+        width: 40,
+        height: 60,
+        speed: 2 + level * 0.5,
+        health: level * 2,
+        type,
+        canShoot: true
+      });
+    }
+
+    function spawnItem() {
+      if (Math.random() < 0.002) {
+        items.push({
+          x: Math.random() * (canvas.width - 40),
+          y: canvas.height - 100,
+          width: 40,
+          height: 40
+        });
+      }
+    }
+
+    function resetGame() {
+      bullets = [];
+      enemyBullets = [];
+      enemies = [];
+      items = [];
+      score = 0;
+      level = 1;
+      player.health = 3;
+      gameOver = false;
+      victory = false;
+      unlimitedAmmo = false;
+      restartBtn.style.display = 'none';
+      scoreBoard.textContent = '';
+      messageDiv.textContent = '';
+      lastEnemySpawn = Date.now();
+      loop();
+    }
+
+    function update() {
+      if (gameOver) return;
+      const now = Date.now();
+      if (now - lastEnemySpawn > enemySpawnInterval) {
+        spawnEnemy();
+        lastEnemySpawn = now;
+      }
+      spawnItem();
+
+      // 이동 & 점프
+      if (keys['ArrowLeft'])  player.x -= player.speed;
+      if (keys['ArrowRight']) player.x += player.speed;
+      if (keys['ArrowUp'] && !player.jumping) {
+        player.velY = -12;
+        player.jumping = true;
+      }
+      player.velY += 0.6;
+      player.y += player.velY;
+      if (player.y + player.height >= canvas.height) {
+        player.y = canvas.height - player.height;
+        player.velY = 0;
+        player.jumping = false;
+      }
+
+      // 사격
+      if (keys['Enter'] && (canShoot || unlimitedAmmo)) {
+        shootBullet(player, 8, bullets);
+        if (!unlimitedAmmo) {
+          canShoot = false;
+          setTimeout(()=>{ canShoot = true; }, reloadTime);
+        }
+        keys['Enter'] = false;
+      }
+
+      // 총알 이동
+      bullets = bullets.filter(b => {
+        b.x += b.speed;
+        return b.x <= canvas.width;
+      });
+      enemyBullets = enemyBullets.filter(b => {
+        b.x -= b.speed;
+        return b.x + b.width >= 0;
+      });
+
+      // 적 & 적 사격
+      enemies.forEach((e, i) => {
+        e.x -= e.speed;
+        if (e.canShoot && Math.random() < 0.005) {
+          shootBullet(e, 5, enemyBullets);
+          e.canShoot = false;
+          setTimeout(()=>{ e.canShoot = true; }, reloadTime);
+        }
+        if (e.x + e.width < 0) enemies.splice(i, 1);
+      });
+
+      // 아이템 획득
+      items.forEach((it, ii) => {
+        if (player.x < it.x + it.width &&
+            player.x + player.width > it.x &&
+            player.y < it.y + it.height &&
+            player.y + player.height > it.y) {
+          items.splice(ii, 1);
+          unlimitedAmmo = true;
+        }
+      });
+
+      // 플레이어-적 충돌
+      enemies.forEach((e, ei) => {
+        if (player.x < e.x + e.width &&
+            player.x + player.width > e.x &&
+            player.y < e.y + e.height &&
+            player.y + player.height > e.y) {
+
+          // 위에서 밟기
+          if (player.velY > 0 && (player.y + player.height - player.velY) <= e.y) {
+            enemies.splice(ei, 1);
+            player.velY = -10;
+            score += 100;
+          } else {
+            player.health--;
+            enemies.splice(ei, 1);
+            if (player.health <= 0) {
+              gameOver = true;
+            }
+          }
+        }
+      });
+
+      // 플레이어-적군 총알 충돌 제거
+      bullets.forEach((b, bi) => {
+        enemyBullets.forEach((eb, ei) => {
+          if (b.x < eb.x + eb.width &&
+              b.x + b.width > eb.x &&
+              b.y < eb.y + eb.height &&
+              b.y + b.height > eb.y) {
+            bullets.splice(bi, 1);
+            enemyBullets.splice(ei, 1);
+          }
+        });
+      });
+
+      // 총알-적 충돌 & 레벨업/승리 처리
+      bullets.forEach((b, bi) => {
+        enemies.forEach((e, ei) => {
+          if (b.x < e.x + e.width &&
+              b.x + b.width > e.x &&
+              b.y < e.y + e.height &&
+              b.y + b.height > e.y) {
+            bullets.splice(bi, 1);
+            e.health--;
+            // 적 사망
+            if (e.health <= 0) {
+              score += 1000;
+              // 아직 레벨 10 미만이면 레벨업
+              if (level < 10) {
+                level++;
+                player.health++;
+                enemySpawnInterval = Math.max(500, 2000 - (level - 1) * 150);
+              } else {
+                // 레벨 10 클리어 → 승리
+                victory = true;
+                gameOver = true;
+                messageDiv.textContent = '🎉 승리! 🎉';
+              }
+              enemies.splice(ei, 1);
+            }
+          }
+        });
+      });
+
+      // 스코어보드 갱신
+      scoreBoard.textContent = `점수: ${score}  레벨: ${level}  체력: ${player.health}`;
+    }
+
+    function draw() {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.drawImage(playerImg, player.x, player.y, player.width, player.height);
+      ctx.fillStyle = '#ff0';
+      bullets.forEach(b => ctx.fillRect(b.x, b.y, b.width, b.height));
+      ctx.fillStyle = '#f00';
+      enemyBullets.forEach(b => ctx.fillRect(b.x, b.y, b.width, b.height));
+      enemies.forEach(e =>
+        ctx.drawImage(enemyImgs[e.type], e.x, e.y, e.width, e.height)
+      );
+      items.forEach(it =>
+        ctx.drawImage(itemImg, it.x, it.y, it.width, it.height)
+      );
+    }
+
+    function loop() {
+      if (!gameOver) {
+        update();
+        draw();
+        requestAnimationFrame(loop);
+      } else {
+        // 패배 시에만 재시작 버튼을 표시
+        if (!victory) {
+          restartBtn.style.display = 'block';
+        }
+      }
+    }
+
+    Promise.all([
+      loadImages(['player.png','soldier1.png','soldier2.png']),
+      loadImages(['item.png'])
+    ])
+    .then(results => init(results[0], results[1]))
+    .catch(err => {
+      console.error('이미지 로드 실패:', err.message);
+      messageDiv.textContent = '이미지 로드 실패';
+    });
+  </script>
+</body>
+</html>
